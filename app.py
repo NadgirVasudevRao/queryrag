@@ -26,7 +26,7 @@ def get_generator():
     return pipeline(
         "text-generation",
         model="tiiuae/falcon-rw-1b",
-        device="cpu",           # change to 0 for GPU
+        device="cpu",           # set to 0 for GPU if available
         max_new_tokens=150,
         do_sample=False
     )
@@ -53,13 +53,16 @@ def extract_text(source, mode):
 # ─── 3) CHUNKING, EMBEDDING & INDEXING ──────────────────────────────────
 
 def chunk_and_index(text):
+    # split into up to 3000‑char chunks
     splitter = CharacterTextSplitter(chunk_size=3000, chunk_overlap=100)
     docs = splitter.split_text(text)
 
-    embs = get_embedder().encode(docs, batch_size=32, show_progress_bar=False)
+    # batch‑embed all chunks
+    embedder = get_embedder()
+    embs = embedder.encode(docs, batch_size=32, show_progress_bar=False)
     embs = np.array(embs, dtype="float32")
 
-    # handle 1D vs 2D embeddings
+    # handle single‑vector vs batch
     if embs.ndim == 1:
         dim = embs.shape[0]
         matrix = embs.reshape(1, -1)
@@ -67,10 +70,11 @@ def chunk_and_index(text):
         dim = embs.shape[1]
         matrix = embs
 
+    # build FAISS index
     index = faiss.IndexFlatL2(dim)
     index.add(matrix)
 
-    # persist to disk
+    # persist index and docs
     faiss.write_index(index, INDEX_FILE)
     with open(DOCS_FILE, "wb") as f:
         pickle.dump(docs, f)
@@ -79,28 +83,29 @@ def chunk_and_index(text):
 
 def load_persisted_index():
     if os.path.exists(INDEX_FILE) and os.path.exists(DOCS_FILE):
-        # load
         idx  = faiss.read_index(INDEX_FILE)
         docs = pickle.load(open(DOCS_FILE, "rb"))
-        # verify dimension
+        # verify dimension matches current embedder
         expected_dim = get_embedder().get_sentence_embedding_dimension()
         if idx.d != expected_dim:
-            # mismatch → delete old files and treat as “no index”
+            # stale index: remove files and signal no index
             os.remove(INDEX_FILE)
             os.remove(DOCS_FILE)
             return None, None
         return docs, idx
     return None, None
 
-
 # ─── 4) QUERY & GENERATION ───────────────────────────────────────────────
 
 def chat_with_content(query, docs, index):
+    # compute query embedding
     q_emb = get_embedder().encode(query).reshape(1, -1)
+    # retrieve top‑3
     k = min(3, len(docs))
     _, inds = index.search(q_emb, k)
     context = "\n\n".join(docs[i] for i in inds[0] if 0 <= i < len(docs))
 
+    # refined prompt
     prompt = f"""
 You are a helpful assistant. Only output the direct answer—do NOT repeat headers.
 
@@ -113,12 +118,14 @@ Question:
 Answer:
 """
     raw = get_generator()(prompt)[0]["generated_text"]
+
     # strip any echoed headers
     if "Answer:" in raw:
         raw = raw.split("Answer:", 1)[1].strip()
     for marker in ("Question:", "Context:"):
         if marker in raw:
             raw = raw.split(marker, 1)[0].strip()
+
     return raw, context
 
 # ─── 5) STREAMLIT UI ─────────────────────────────────────────────────────
@@ -126,12 +133,13 @@ Answer:
 st.set_page_config(page_title="QueryRAG", layout="wide")
 st.sidebar.title("🔎 Input Source")
 
-# Try loading existing index on startup
+# attempt to load existing index on startup
 docs, idx = load_persisted_index()
 if docs:
     st.session_state.docs  = docs
     st.session_state.index = idx
 
+# input mode selector (now has a label)
 mode = st.sidebar.radio(
     "Input source",
     ["Website URL", "Upload File"],
@@ -142,12 +150,13 @@ if mode == "Website URL":
 else:
     source = st.sidebar.file_uploader("Choose a file", type=["pdf","txt","docx"])
 
+# process & index action
 if st.sidebar.button("🔄 Process & Index"):
     if not source:
-        st.sidebar.error("Provide a URL or file.")
+        st.sidebar.error("Please provide a URL or upload a file.")
     else:
         progress = st.sidebar.progress(0)
-        st.sidebar.write("Indexing…")
+        st.sidebar.info("Indexing content…")
         raw = extract_text(source, mode)
         docs, idx = chunk_and_index(raw)
         st.session_state.docs  = docs
@@ -155,10 +164,11 @@ if st.sidebar.button("🔄 Process & Index"):
         progress.progress(100)
         st.sidebar.success("✅ Indexed!")
 
+# main chat UI appears only if index is present
 st.title("🗣️ QueryRAG Chatbot")
 if "index" in st.session_state and st.session_state.index.ntotal > 0:
-    # debug info
-    st.caption(f"▸ {len(st.session_state.docs)} chunks indexed; index size = {st.session_state.index.ntotal}")
+    # debug: show how many chunks/vectors you have
+    st.caption(f"▸ Indexed {len(st.session_state.docs)} chunks (index size = {st.session_state.index.ntotal})")
     q = st.text_input("Your question:")
     if q:
         answer, ctx = chat_with_content(q, st.session_state.docs, st.session_state.index)
@@ -166,4 +176,4 @@ if "index" in st.session_state and st.session_state.index.ntotal > 0:
         with st.expander("Show context"):
             st.write(ctx)
 else:
-    st.info("▶ Please Process & Index first.")
+    st.info("▶ Please click ‘Process & Index’ first in the sidebar.")

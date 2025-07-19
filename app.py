@@ -26,7 +26,7 @@ def get_generator():
     return pipeline(
         "text-generation",
         model="tiiuae/falcon-rw-1b",
-        device="cpu",
+        device="cpu",           # change to 0 for GPU
         max_new_tokens=150,
         do_sample=False
     )
@@ -39,7 +39,6 @@ def extract_text(source, mode):
         soup = BeautifulSoup(r.text, "html.parser")
         return "\n".join(p.get_text() for p in soup.find_all("p"))
     else:
-        # UploadedFile
         if source.type == "application/pdf":
             text = ""
             with pdfplumber.open(source) as pdf:
@@ -51,7 +50,7 @@ def extract_text(source, mode):
         else:
             return source.read().decode("utf-8")
 
-# ─── 3) CHUNKING & INDEXING ──────────────────────────────────────────────
+# ─── 3) CHUNKING, EMBEDDING & INDEXING ──────────────────────────────────
 
 def chunk_and_index(text):
     splitter = CharacterTextSplitter(chunk_size=3000, chunk_overlap=100)
@@ -60,7 +59,7 @@ def chunk_and_index(text):
     embs = get_embedder().encode(docs, batch_size=32, show_progress_bar=False)
     embs = np.array(embs, dtype="float32")
 
-    # single‐vector edge‑case
+    # handle 1D vs 2D embeddings
     if embs.ndim == 1:
         dim = embs.shape[0]
         matrix = embs.reshape(1, -1)
@@ -88,8 +87,6 @@ def load_persisted_index():
 # ─── 4) QUERY & GENERATION ───────────────────────────────────────────────
 
 def chat_with_content(query, docs, index):
-    if not docs or index.ntotal == 0:
-        return "No content indexed. Please process first.", ""
     q_emb = get_embedder().encode(query).reshape(1, -1)
     k = min(3, len(docs))
     _, inds = index.search(q_emb, k)
@@ -120,18 +117,12 @@ Answer:
 st.set_page_config(page_title="QueryRAG", layout="wide")
 st.sidebar.title("🔎 Input Source")
 
-# initialize processed flag
-if "processed" not in st.session_state:
-    st.session_state.processed = False
-
-# Try to load existing index on startup
+# Try loading existing index on startup
 docs, idx = load_persisted_index()
-if docs and not st.session_state.processed:
+if docs:
     st.session_state.docs  = docs
     st.session_state.index = idx
-    st.session_state.processed = True
 
-# choose mode
 mode = st.sidebar.radio(
     "Input source",
     ["Website URL", "Upload File"],
@@ -142,27 +133,23 @@ if mode == "Website URL":
 else:
     source = st.sidebar.file_uploader("Choose a file", type=["pdf","txt","docx"])
 
-# process & index button
 if st.sidebar.button("🔄 Process & Index"):
     if not source:
         st.sidebar.error("Provide a URL or file.")
     else:
         progress = st.sidebar.progress(0)
-        st.sidebar.write("Processing…")
-        text = extract_text(source, mode)
-        docs, idx = chunk_and_index(text)
-        # save to session
-        st.session_state.docs      = docs
-        st.session_state.index     = idx
-        st.session_state.processed = True
+        st.sidebar.write("Indexing…")
+        raw = extract_text(source, mode)
+        docs, idx = chunk_and_index(raw)
+        st.session_state.docs  = docs
+        st.session_state.index = idx
         progress.progress(100)
-        st.sidebar.success("✅ Done!")
+        st.sidebar.success("✅ Indexed!")
 
-# Main chat area
 st.title("🗣️ QueryRAG Chatbot")
-if st.session_state.processed:
+if "index" in st.session_state and st.session_state.index.ntotal > 0:
     # debug info
-    st.caption(f"Indexed {len(st.session_state.docs)} chunks; index size = {st.session_state.index.ntotal}")
+    st.caption(f"▸ {len(st.session_state.docs)} chunks indexed; index size = {st.session_state.index.ntotal}")
     q = st.text_input("Your question:")
     if q:
         answer, ctx = chat_with_content(q, st.session_state.docs, st.session_state.index)

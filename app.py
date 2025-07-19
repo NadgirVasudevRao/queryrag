@@ -65,10 +65,18 @@ def chunk_and_index(text):
     embs = model.encode(docs, batch_size=32, show_progress_bar=False)
     embs = np.array(embs, dtype="float32")
 
-    # 3.3) Build & persist index
-    dim = embs.shape[1]
+    # 3.3) Handle single‑vector vs batch case
+    if embs.ndim == 1:
+        # only one chunk → reshape to (1, dim)
+        dim = embs.shape[0]
+        matrix = embs.reshape(1, -1)
+    else:
+        dim = embs.shape[1]
+        matrix = embs
+
+    # 3.4) Build & persist index
     index = faiss.IndexFlatL2(dim)
-    index.add(embs)
+    index.add(matrix)
     faiss.write_index(index, INDEX_FILE)
     with open(DOCS_FILE, "wb") as f:
         pickle.dump(docs, f)
@@ -129,7 +137,11 @@ if docs:
     st.session_state.docs  = docs
     st.session_state.index = idx
 
-mode = st.sidebar.radio("Input source", ["Website URL", "Upload File"], label_visibility="visible")
+mode = st.sidebar.radio(
+    "Input source",
+    ["Website URL", "Upload File"],
+    label_visibility="visible"
+)
 if mode == "Website URL":
     source = st.sidebar.text_input("Enter URL")
 else:

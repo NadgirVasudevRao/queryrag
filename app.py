@@ -79,10 +79,19 @@ def chunk_and_index(text):
 
 def load_persisted_index():
     if os.path.exists(INDEX_FILE) and os.path.exists(DOCS_FILE):
+        # load
         idx  = faiss.read_index(INDEX_FILE)
         docs = pickle.load(open(DOCS_FILE, "rb"))
+        # verify dimension
+        expected_dim = get_embedder().get_sentence_embedding_dimension()
+        if idx.d != expected_dim:
+            # mismatch → delete old files and treat as “no index”
+            os.remove(INDEX_FILE)
+            os.remove(DOCS_FILE)
+            return None, None
         return docs, idx
     return None, None
+
 
 # ─── 4) QUERY & GENERATION ───────────────────────────────────────────────
 

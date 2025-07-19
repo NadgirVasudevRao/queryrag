@@ -65,9 +65,8 @@ def chunk_and_index(text):
     embs = model.encode(docs, batch_size=32, show_progress_bar=False)
     embs = np.array(embs, dtype="float32")
 
-    # 3.3) Handle single‑vector vs batch case
+    # 3.3) Handle single‐vector edge‐case
     if embs.ndim == 1:
-        # only one chunk → reshape to (1, dim)
         dim = embs.shape[0]
         matrix = embs.reshape(1, -1)
     else:
@@ -93,17 +92,14 @@ def load_persisted_index():
 # ─── 4) QUERY & GENERATION ───────────────────────────────────────────────
 
 def chat_with_content(query, docs, index):
-    # guard empty
     if not docs or index.ntotal == 0:
         return "No content indexed. Please process first.", ""
 
-    # retrieve top‑k
     q_emb = get_embedder().encode(query).reshape(1, -1)
     k = min(3, len(docs))
     _, inds = index.search(q_emb, k)
     context = "\n\n".join(docs[i] for i in inds[0] if 0 <= i < len(docs))
 
-    # refined prompt
     prompt = f"""
 You are a helpful assistant. Only output the direct answer—do NOT repeat headers.
 
@@ -131,12 +127,13 @@ Answer:
 st.set_page_config(page_title="QueryRAG", layout="wide")
 st.sidebar.title("🔎 Input Source")
 
-# load persisted if available
+# Load persisted index if available
 docs, idx = load_persisted_index()
 if docs:
     st.session_state.docs  = docs
     st.session_state.index = idx
 
+# Input mode
 mode = st.sidebar.radio(
     "Input source",
     ["Website URL", "Upload File"],
@@ -160,8 +157,12 @@ if st.sidebar.button("🔄 Process & Index"):
         progress.progress(100)
         st.sidebar.success("✅ Done and saved!")
 
+        # Rerun so chat UI updates
+        st.experimental_rerun()
+
+# Chat UI
 st.title("🗣️ QueryRAG Chatbot")
-if "index" in st.session_state:
+if "index" in st.session_state and st.session_state.index.ntotal > 0:
     q = st.text_input("Your question:")
     if q:
         answer, ctx = chat_with_content(

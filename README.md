@@ -1,6 +1,3 @@
-# queryrag
-A Streamlit‑based Retrieval‑Augmented Generation chatbot for websites and documents.
-
 # RAG Chatbot Streamlit App
 
 A Retrieval-Augmented Generation (RAG) chatbot built with Streamlit, FAISS, and Hugging Face models. This project allows you to input a website URL or upload a document (PDF, TXT, DOCX), index its content, and ask natural language questions with quick, accurate answers.

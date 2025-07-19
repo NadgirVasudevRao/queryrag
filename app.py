@@ -11,12 +11,11 @@ from sentence_transformers import SentenceTransformer
 import faiss
 from transformers import pipeline
 
-# ─── Persistence paths ─────────────────────────────────────────────────
+# ─── Persistence filenames ───────────────────────────────────────────────
 INDEX_FILE = "faiss.index"
 DOCS_FILE  = "docs.pkl"
 
-# ─── 1) CACHED RESOURCES ────────────────────────────────────────────────
-
+# ─── 1) CACHED RESOURCES ─────────────────────────────────────────────────
 @st.cache_resource
 def get_embedder():
     return SentenceTransformer("all-MiniLM-L6-v2")
@@ -32,7 +31,6 @@ def get_generator():
     )
 
 # ─── 2) EXTRACTION ───────────────────────────────────────────────────────
-
 def extract_text(source, mode):
     if mode == "Website URL":
         r = requests.get(source, timeout=10)
@@ -51,9 +49,8 @@ def extract_text(source, mode):
             return source.read().decode("utf-8")
 
 # ─── 3) CHUNKING, EMBEDDING & INDEXING ──────────────────────────────────
-
 def chunk_and_index(text):
-    # split into up to 3000‑char chunks
+    # split into ~3000‑char chunks
     splitter = CharacterTextSplitter(chunk_size=3000, chunk_overlap=100)
     docs = splitter.split_text(text)
 
@@ -62,7 +59,7 @@ def chunk_and_index(text):
     embs = embedder.encode(docs, batch_size=32, show_progress_bar=False)
     embs = np.array(embs, dtype="float32")
 
-    # handle single‑vector vs batch
+    # handle single‑chunk edge case
     if embs.ndim == 1:
         dim = embs.shape[0]
         matrix = embs.reshape(1, -1)
@@ -70,42 +67,44 @@ def chunk_and_index(text):
         dim = embs.shape[1]
         matrix = embs
 
-    # build FAISS index
+    # build & persist FAISS index
     index = faiss.IndexFlatL2(dim)
     index.add(matrix)
-
-    # persist index and docs
     faiss.write_index(index, INDEX_FILE)
     with open(DOCS_FILE, "wb") as f:
         pickle.dump(docs, f)
 
     return docs, index
 
-def load_persisted_index():
+# ─── 4) LOAD OR REBUILD INDEX ────────────────────────────────────────────
+def load_or_clear_index():
+    """
+    Tries to load an existing index/docs; if any error or dimension mismatch,
+    deletes the files and returns (None, None).
+    """
     if os.path.exists(INDEX_FILE) and os.path.exists(DOCS_FILE):
-        idx  = faiss.read_index(INDEX_FILE)
-        docs = pickle.load(open(DOCS_FILE, "rb"))
-        # verify dimension matches current embedder
-        expected_dim = get_embedder().get_sentence_embedding_dimension()
-        if idx.d != expected_dim:
-            # stale index: remove files and signal no index
-            os.remove(INDEX_FILE)
-            os.remove(DOCS_FILE)
-            return None, None
-        return docs, idx
+        try:
+            idx  = faiss.read_index(INDEX_FILE)
+            docs = pickle.load(open(DOCS_FILE, "rb"))
+            expected_dim = get_embedder().get_sentence_embedding_dimension()
+            # faiss index has attribute d for dimension
+            if getattr(idx, "d", idx.ntotal) != expected_dim:
+                raise ValueError("Dimension mismatch")
+            return docs, idx
+        except Exception:
+            # stale or corrupted → delete and start fresh
+            for fn in (INDEX_FILE, DOCS_FILE):
+                try: os.remove(fn)
+                except: pass
     return None, None
 
-# ─── 4) QUERY & GENERATION ───────────────────────────────────────────────
-
+# ─── 5) QUERY & GENERATION ───────────────────────────────────────────────
 def chat_with_content(query, docs, index):
-    # compute query embedding
     q_emb = get_embedder().encode(query).reshape(1, -1)
-    # retrieve top‑3
     k = min(3, len(docs))
     _, inds = index.search(q_emb, k)
     context = "\n\n".join(docs[i] for i in inds[0] if 0 <= i < len(docs))
 
-    # refined prompt
     prompt = f"""
 You are a helpful assistant. Only output the direct answer—do NOT repeat headers.
 
@@ -128,29 +127,27 @@ Answer:
 
     return raw, context
 
-# ─── 5) STREAMLIT UI ─────────────────────────────────────────────────────
-
+# ─── 6) STREAMLIT UI ─────────────────────────────────────────────────────
 st.set_page_config(page_title="QueryRAG", layout="wide")
 st.sidebar.title("🔎 Input Source")
 
-# attempt to load existing index on startup
-docs, idx = load_persisted_index()
+# load or clear any on-disk index at startup
+docs, idx = load_or_clear_index()
 if docs:
     st.session_state.docs  = docs
     st.session_state.index = idx
 
-# input mode selector (now has a label)
 mode = st.sidebar.radio(
     "Input source",
     ["Website URL", "Upload File"],
     label_visibility="visible"
 )
-if mode == "Website URL":
-    source = st.sidebar.text_input("Enter URL")
-else:
-    source = st.sidebar.file_uploader("Choose a file", type=["pdf","txt","docx"])
+source = (
+    st.sidebar.text_input("Enter URL")
+    if mode=="Website URL"
+    else st.sidebar.file_uploader("Choose a file", type=["pdf","txt","docx"])
+)
 
-# process & index action
 if st.sidebar.button("🔄 Process & Index"):
     if not source:
         st.sidebar.error("Please provide a URL or upload a file.")
@@ -164,11 +161,9 @@ if st.sidebar.button("🔄 Process & Index"):
         progress.progress(100)
         st.sidebar.success("✅ Indexed!")
 
-# main chat UI appears only if index is present
 st.title("🗣️ QueryRAG Chatbot")
 if "index" in st.session_state and st.session_state.index.ntotal > 0:
-    # debug: show how many chunks/vectors you have
-    st.caption(f"▸ Indexed {len(st.session_state.docs)} chunks (index size = {st.session_state.index.ntotal})")
+    st.caption(f"▸ Indexed {len(st.session_state.docs)} chunks")
     q = st.text_input("Your question:")
     if q:
         answer, ctx = chat_with_content(q, st.session_state.docs, st.session_state.index)

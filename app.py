@@ -56,16 +56,13 @@ def extract_text(source, mode):
 # ─── 3) CHUNKING, EMBEDDING & INDEXING ──────────────────────────────────
 
 def chunk_and_index(text):
-    # 3.1) Chunk with larger size
     splitter = CharacterTextSplitter(chunk_size=3000, chunk_overlap=100)
     docs = splitter.split_text(text)
 
-    # 3.2) Batch‐embed
-    model = get_embedder()
-    embs = model.encode(docs, batch_size=32, show_progress_bar=False)
+    embs = get_embedder().encode(docs, batch_size=32, show_progress_bar=False)
     embs = np.array(embs, dtype="float32")
 
-    # 3.3) Handle single‐vector edge‐case
+    # handle single-chunk case
     if embs.ndim == 1:
         dim = embs.shape[0]
         matrix = embs.reshape(1, -1)
@@ -73,9 +70,10 @@ def chunk_and_index(text):
         dim = embs.shape[1]
         matrix = embs
 
-    # 3.4) Build & persist index
     index = faiss.IndexFlatL2(dim)
     index.add(matrix)
+
+    # persist
     faiss.write_index(index, INDEX_FILE)
     with open(DOCS_FILE, "wb") as f:
         pickle.dump(docs, f)
@@ -113,7 +111,6 @@ Answer:
 """
     raw = get_generator()(prompt)[0]["generated_text"]
 
-    # strip echoes
     if "Answer:" in raw:
         raw = raw.split("Answer:", 1)[1].strip()
     for marker in ("Question:", "Context:"):
@@ -127,13 +124,12 @@ Answer:
 st.set_page_config(page_title="QueryRAG", layout="wide")
 st.sidebar.title("🔎 Input Source")
 
-# Load persisted index if available
+# Load any persisted index
 docs, idx = load_persisted_index()
 if docs:
     st.session_state.docs  = docs
     st.session_state.index = idx
 
-# Input mode
 mode = st.sidebar.radio(
     "Input source",
     ["Website URL", "Upload File"],
@@ -157,17 +153,12 @@ if st.sidebar.button("🔄 Process & Index"):
         progress.progress(100)
         st.sidebar.success("✅ Done and saved!")
 
-        # Rerun so chat UI updates
-        st.experimental_rerun()
-
-# Chat UI
+# Only show chat once we have an index
 st.title("🗣️ QueryRAG Chatbot")
 if "index" in st.session_state and st.session_state.index.ntotal > 0:
     q = st.text_input("Your question:")
     if q:
-        answer, ctx = chat_with_content(
-            q, st.session_state.docs, st.session_state.index
-        )
+        answer, ctx = chat_with_content(q, st.session_state.docs, st.session_state.index)
         st.markdown(f"**Answer:**  {answer}")
         with st.expander("Show context"):
             st.write(ctx)

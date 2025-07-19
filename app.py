@@ -56,8 +56,8 @@ def extract_text(source, mode):
 # ─── 3) CHUNKING, EMBEDDING & INDEXING ──────────────────────────────────
 
 def chunk_and_index(text):
-    # 3.1) Chunk
-    splitter = CharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
+    # 3.1) Chunk with larger size
+    splitter = CharacterTextSplitter(chunk_size=3000, chunk_overlap=100)
     docs = splitter.split_text(text)
 
     # 3.2) Batch‐embed
@@ -120,7 +120,7 @@ Answer:
 
 # ─── 5) STREAMLIT UI ─────────────────────────────────────────────────────
 
-st.set_page_config(page_title="RAG Chatbot", layout="wide")
+st.set_page_config(page_title="QueryRAG", layout="wide")
 st.sidebar.title("🔎 Input Source")
 
 # load persisted if available
@@ -129,7 +129,7 @@ if docs:
     st.session_state.docs  = docs
     st.session_state.index = idx
 
-mode = st.sidebar.radio("", ["Website URL", "Upload File"])
+mode = st.sidebar.radio("Input source", ["Website URL", "Upload File"], label_visibility="visible")
 if mode == "Website URL":
     source = st.sidebar.text_input("Enter URL")
 else:
@@ -139,9 +139,8 @@ if st.sidebar.button("🔄 Process & Index"):
     if not source:
         st.sidebar.error("Provide a URL or file.")
     else:
-        with st.sidebar:
-            progress = st.progress(0)
-            st.write("Processing…")
+        progress = st.sidebar.progress(0)
+        st.sidebar.write("Processing…")
         raw = extract_text(source, mode)
         docs, idx = chunk_and_index(raw)
         st.session_state.docs  = docs
@@ -149,7 +148,7 @@ if st.sidebar.button("🔄 Process & Index"):
         progress.progress(100)
         st.sidebar.success("✅ Done and saved!")
 
-st.title("🗣️ Chatbot")
+st.title("🗣️ QueryRAG Chatbot")
 if "index" in st.session_state:
     q = st.text_input("Your question:")
     if q:
@@ -161,8 +160,3 @@ if "index" in st.session_state:
             st.write(ctx)
 else:
     st.info("▶ Please Process & Index first.")
-
-# ─── Deployment ─────────────────────────────────────────────────────────
-# 1. Add this file and a requirements.txt listing your deps to a GitHub repo.
-# 2. Go to https://streamlit.io/cloud or https://hf.co/spaces and connect your repo.
-# 3. Your app will auto-deploy on push—no changes needed!
